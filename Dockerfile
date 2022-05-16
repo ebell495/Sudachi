@@ -7,3 +7,4 @@ RUN wget http://sudachi.s3-website-ap-northeast-1.amazonaws.com/sudachidict/suda
     unzip sudachi-dictionary-20211220-core.zip && \
     cp sudachi-dictionary-20211220/system_core.dic . && \
     find . -name "sudachi*.jar" -exec cp {} "sudachi.jar" \;
+RUN chmod +x sudachi.jar
