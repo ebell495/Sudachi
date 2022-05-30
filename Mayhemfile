@@ -1,7 +1,5 @@
 project: sudachi
 target: sudachi
-duration: 300
-image: ghcr.io/ebell495/sudachi:latest
 
 cmds:
     - cmd: ./sudachi.jar -s '{"systemDict":"system_core.dic"}' @@
