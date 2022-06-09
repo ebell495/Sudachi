@@ -1,4 +1,4 @@
-FROM gradle:jdk11
+FROM ghcr.io/ebell495/gradle:7.4.2
 COPY . /Sudachi
 WORKDIR /Sudachi
 RUN gradle installExecutableDist
