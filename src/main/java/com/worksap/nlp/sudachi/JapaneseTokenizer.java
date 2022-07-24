@@ -31,15 +31,13 @@ import javax.json.JsonArrayBuilder;
 import javax.json.JsonObjectBuilder;
 import javax.json.JsonWriter;
 
-import com.worksap.nlp.sudachi.dictionary.CategoryType;
-import com.worksap.nlp.sudachi.dictionary.Grammar;
-import com.worksap.nlp.sudachi.dictionary.Lexicon;
+import com.worksap.nlp.sudachi.dictionary.*;
 import com.worksap.nlp.sudachi.sentdetect.SentenceDetector;
 
 class JapaneseTokenizer implements Tokenizer {
 
     Grammar grammar;
-    Lexicon lexicon;
+    LexiconSet lexicon;
     List<InputTextPlugin> inputTextPlugins;
     List<OovProviderPlugin> oovProviderPlugins;
     List<PathRewritePlugin> pathRewritePlugins;
@@ -54,7 +52,7 @@ class JapaneseTokenizer implements Tokenizer {
             List<OovProviderPlugin> oovProviderPlugins, List<PathRewritePlugin> pathRewritePlugins) {
 
         this.grammar = grammar;
-        this.lexicon = lexicon;
+        this.lexicon = (LexiconSet) lexicon;
         this.inputTextPlugins = inputTextPlugins;
         this.oovProviderPlugins = oovProviderPlugins;
         this.pathRewritePlugins = pathRewritePlugins;
@@ -228,48 +226,63 @@ class JapaneseTokenizer implements Tokenizer {
     LatticeImpl buildLattice(UTF8InputText input) {
         byte[] bytes = input.getByteText();
         lattice.resize(bytes.length);
-        for (int i = 0; i < bytes.length; i++) {
-            if (!input.canBow(i) || !lattice.hasPreviousNode(i)) {
+        ArrayList<LatticeNodeImpl> unkNodes = new ArrayList<>(64);
+        WordLookup wordLookup = lexicon.makeLookup();
+        for (int byteBoundary = 0; byteBoundary < bytes.length; byteBoundary++) {
+            if (!input.canBow(byteBoundary) || !lattice.hasPreviousNode(byteBoundary)) {
                 continue;
             }
-            Iterator<int[]> iterator = lexicon.lookup(bytes, i);
-            boolean hasWords = false;
-            while (iterator.hasNext()) {
-                int[] r = iterator.next();
-                int wordId = r[0];
-                int end = r[1];
-
+            wordLookup.reset(bytes, byteBoundary, bytes.length);
+            long wordMask = 0L;
+            while (wordLookup.next()) {
+                int end = wordLookup.getEndOffset();
                 if (end < bytes.length && !input.canBow(end)) {
                     continue;
                 }
-                LatticeNode n = new LatticeNodeImpl(lexicon, lexicon.getLeftId(wordId), lexicon.getRightId(wordId),
-                        lexicon.getCost(wordId), wordId);
-                lattice.insert(i, end, n);
-                hasWords = true;
+                int numWords = wordLookup.getNumWords();
+                int[] wordIds = wordLookup.getWordsIds();
+                for (int word = 0; word < numWords; ++word) {
+                    int wordId = wordIds[word];
+                    LatticeNodeImpl n = new LatticeNodeImpl(lexicon, lexicon.getLeftId(wordId),
+                            lexicon.getRightId(wordId), lexicon.getCost(wordId), wordId);
+                    lattice.insert(byteBoundary, end, n);
+                    unkNodes.add(n);
+                    wordMask = WordMask.addNth(wordMask, end - byteBoundary);
+                }
             }
+            long wordMaskWithOov = wordMask;
 
             // OOV
-            if (!input.getCharCategoryTypes(i).contains(CategoryType.NOOOVBOW)) {
+            if (!input.getCharCategoryTypes(byteBoundary).contains(CategoryType.NOOOVBOW)) {
                 for (OovProviderPlugin plugin : oovProviderPlugins) {
-                    for (LatticeNode node : plugin.getOOV(input, i, hasWords)) {
-                        hasWords = true;
-                        lattice.insert(node.getBegin(), node.getEnd(), node);
-                    }
+                    wordMaskWithOov = provideOovs(plugin, input, unkNodes, byteBoundary, wordMaskWithOov);
                 }
             }
-            if (!hasWords && defaultOovProvider != null) {
-                for (LatticeNode node : defaultOovProvider.getOOV(input, i, hasWords)) {
-                    hasWords = true;
-                    lattice.insert(node.getBegin(), node.getEnd(), node);
-                }
+            if (wordMaskWithOov == 0 && defaultOovProvider != null) {
+                wordMaskWithOov = provideOovs(defaultOovProvider, input, unkNodes, byteBoundary, wordMaskWithOov);
             }
-            if (!hasWords) {
-                throw new IllegalStateException("there is no morpheme at " + i);
+            if (wordMaskWithOov == 0) {
+                throw new IllegalStateException("failed to found any morpheme candidate at boundary " + byteBoundary);
             }
         }
         lattice.connectEosNode();
 
         return lattice;
+    }
+
+    private long provideOovs(OovProviderPlugin plugin, UTF8InputText input, ArrayList<LatticeNodeImpl> unkNodes,
+            int boundary, long wordMask) {
+        int initialSize = unkNodes.size();
+        int created = plugin.getOOV(input, boundary, wordMask, unkNodes);
+        if (created == 0) {
+            return wordMask;
+        }
+        for (int i = initialSize; i < initialSize + created; ++i) {
+            LatticeNodeImpl node = unkNodes.get(i);
+            lattice.insert(node.getBegin(), node.getEnd(), node);
+            wordMask = WordMask.addNth(wordMask, node.getEnd() - node.getBegin());
+        }
+        return wordMask;
     }
 
     List<LatticeNode> splitPath(List<LatticeNode> path, SplitMode mode) {
@@ -300,7 +313,7 @@ class JapaneseTokenizer implements Tokenizer {
     void dumpPath(List<LatticeNode> path) {
         int i = 0;
         for (LatticeNode node : path) {
-            dumpOutput.println(String.format("%d: %s", i, node.toString()));
+            dumpOutput.printf("%d: %s\n", i, node.toString());
             i++;
         }
     }
@@ -338,7 +351,7 @@ class JapaneseTokenizer implements Tokenizer {
                 while (iterator.hasNext()) {
                     int[] r = iterator.next();
                     int l = r[1];
-                    if (l > byteEOS || (l == byteEOS && bos + length - input.getOffsetTextLength(i) > 1)) {
+                    if (l > byteEOS || (l == byteEOS && bos + length - input.modifiedOffset(i) > 1)) {
                         return true;
                     }
                 }

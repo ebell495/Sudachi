@@ -18,8 +18,12 @@ package com.worksap.nlp.sudachi;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
 
 import com.worksap.nlp.sudachi.dictionary.Grammar;
+import com.worksap.nlp.sudachi.dictionary.GrammarImpl;
+import com.worksap.nlp.sudachi.dictionary.POS;
 
 /**
  * A plugin that provides the nodes of out-of-vocabulary morphemes.
@@ -64,31 +68,65 @@ public abstract class OovProviderPlugin extends Plugin {
      *            the input text
      * @param offset
      *            the index of insertion
-     * @param hasOtherWords
-     *            if {@code true}, the lattice has other words beginning at
-     *            {@code offset}.
-     * @return the nodes of OOV morphemes
+     * @param otherWords
+     *            bitmask that contains information nodes on which boundaries were
+     *            already created. For example, a mask of 0b1001 means that there
+     *            were already created two nodes: of length 1 and 4. If the highest
+     *            bit is set, it means that a node of length of 64 <b>or greater</b>
+     *            was created.
+     * @param result
+     *            OOV provider plugins need to add nodes here
+     * @return the number of created nodes. Values outside that range will be
+     *         ignored.
      */
-    public abstract List<LatticeNode> provideOOV(InputText inputText, int offset, boolean hasOtherWords);
+    public abstract int provideOOV(InputText inputText, int offset, long otherWords, List<LatticeNodeImpl> result);
 
-    List<LatticeNode> getOOV(UTF8InputText inputText, int offset, boolean hasOtherWords) {
-        List<LatticeNode> nodes = provideOOV(inputText, offset, hasOtherWords);
-        for (LatticeNode node : nodes) {
-            LatticeNodeImpl n = (LatticeNodeImpl) node;
+    int getOOV(UTF8InputText inputText, int offset, long otherWords, List<LatticeNodeImpl> result) {
+        int oldSize = result.size();
+        int numCreated = provideOOV(inputText, offset, otherWords, result);
+        for (int i = 0; i < numCreated; i++) {
+            LatticeNodeImpl n = result.get(oldSize + i);
             n.begin = offset;
-            n.end = offset + node.getWordInfo().getLength();
+            n.end = offset + n.getWordInfo().getLength();
         }
-        return nodes;
+        return numCreated;
     }
 
     /**
-     * Returns a new node of OOV.
+     * Returns a new node which represents an OOV word.
      *
-     * @return a node of OOV
+     * @return a new OOV node
      */
-    public LatticeNode createNode() {
-        LatticeNode node = new LatticeNodeImpl();
+    protected LatticeNodeImpl createNode() {
+        LatticeNodeImpl node = new LatticeNodeImpl();
         node.setOOV();
         return node;
+    }
+
+    /**
+     * Recommended name for user POS mode flag
+     */
+    public static final String USER_POS = "userPOS";
+
+    public static final String USER_POS_FORBID = "forbid";
+    public static final String USER_POS_ALLOW = "allow";
+
+    protected short posIdOf(Grammar grammar, POS pos, String userPosMode) {
+        short posIdPresent = grammar.getPartOfSpeechId(pos);
+        userPosMode = userPosMode.toLowerCase(Locale.ROOT);
+
+        if (Objects.equals(userPosMode, USER_POS_FORBID)) {
+            if (posIdPresent >= 0) {
+                return posIdPresent;
+            }
+            throw new IllegalArgumentException(String.format(
+                    "POS %s WAS NOT present in dictionary and OOV Plugin %s is forbidden to add new POS tags", pos,
+                    this));
+        } else if (!Objects.equals(userPosMode, USER_POS_ALLOW)) {
+            throw new IllegalArgumentException(
+                    "Unknown user POS mode: " + userPosMode + " allowed values are: forbid, allow");
+        }
+        GrammarImpl grammarImpl = (GrammarImpl) grammar;
+        return grammarImpl.registerPOS(pos);
     }
 }

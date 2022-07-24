@@ -16,20 +16,14 @@
 
 package com.worksap.nlp.sudachi;
 
-import static org.hamcrest.CoreMatchers.hasItem;
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-
-import java.io.IOException;
-
+import com.worksap.nlp.sudachi.dictionary.CategoryType;
 import org.junit.Before;
 import org.junit.Test;
 
-import com.worksap.nlp.sudachi.dictionary.CategoryType;
-import com.worksap.nlp.sudachi.dictionary.CharacterCategory;
+import static org.hamcrest.CoreMatchers.hasItem;
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.junit.Assert.*;
 
 public class UTF8InputTextTest {
 
@@ -284,9 +278,9 @@ public class UTF8InputTextTest {
         input = input.slice(1, 3);
         assertThat(input.getOriginalText(), is("ｂC1"));
         assertThat(input.getText(), is("あ1"));
-        assertThat(input.getOffsetTextLength(1), is(0));
-        assertThat(input.getOffsetTextLength(3), is(1));
-        assertThat(input.getOffsetTextLength(4), is(2));
+        assertThat(input.modifiedOffset(1), is(0));
+        assertThat(input.modifiedOffset(3), is(1));
+        assertThat(input.modifiedOffset(4), is(2));
         assertThat(input.getOriginalIndex(3), is(2));
         assertThat(input.getOriginalIndex(4), is(3));
     }
@@ -300,15 +294,6 @@ public class UTF8InputTextTest {
 
     private UTF8InputTextBuilder builder(String text) {
         grammar = new MockGrammar();
-        CharacterCategory charCategory = new CharacterCategory();
-        try {
-            charCategory.readCharacterDefinition(
-                    UTF8InputTextTest.class.getClassLoader().getResource("char.def").getPath());
-        } catch (IOException ex) {
-            ex.printStackTrace();
-        }
-        grammar.setCharacterCategory(charCategory);
-
         return new UTF8InputTextBuilder(text, grammar);
     }
 }

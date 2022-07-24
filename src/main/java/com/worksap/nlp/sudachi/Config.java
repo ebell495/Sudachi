@@ -20,6 +20,7 @@ import com.worksap.nlp.sudachi.dictionary.BinaryDictionary;
 import com.worksap.nlp.sudachi.dictionary.CharacterCategory;
 
 import javax.json.Json;
+import javax.json.JsonArrayBuilder;
 import javax.json.JsonObject;
 import java.io.IOException;
 import java.io.InputStream;
@@ -34,19 +35,24 @@ import java.util.*;
 /**
  * Typed configuration for Sudachi. Should be created by static methods
  * ({@link #empty()} or {@code from*()}).
- *
+ * <p>
  * There are two main configuration modes: parsing json configuration file and
  * specifying resources in code. Resources can be specified from classpath,
  * filesystem or be pre-created.
- *
+ * <p>
+ * {@link URL}s for fromClasspath methods should be provided from
+ * {@link Class#getResource(String)} or {@link ClassLoader#getResource(String)}
+ * methods.
+ * <p>
  * Resource paths inside the json configuration files will be resolved relative
  * to the configuration file. If the file was in classpath, they will be looked
  * up in classpath or relative to the working directory. If the file was in
  * filesystem, they will be resolved relative to the configuration file only.
  *
  * @see Settings Settings: untyped configuration parsed from json file
+ * @see PathAnchor
  * @see #empty()
- * @see #fromClasspath()
+ * @see #defaultConfig()
  * @see #fromFile(Path)
  */
 public class Config {
@@ -65,7 +71,7 @@ public class Config {
     /**
      * Creates an empty configuration. Useful for building configuration manually
      * instead of loading it from a file.
-     * 
+     *
      * @return empty Config object
      */
     public static Config empty() {
@@ -74,14 +80,30 @@ public class Config {
 
     /**
      * Loads configuration from the first instance of {@code sudachi.json} file
-     * loaded from classpath.
-     * 
+     * loaded from classpath. In-config paths will be resolved only with respect to
+     * classpath.
+     *
      * @return Config object
      * @throws IOException
      *             when IO fails
      */
-    public static Config fromClasspath() throws IOException {
-        return fromClasspath("sudachi.json");
+    public static Config defaultConfig() throws IOException {
+        return defaultConfig(PathAnchor.classpath());
+    }
+
+    /**
+     * Loads configuration from the first instance of {@code sudachi.json} in the
+     * classpath. In-config paths will be resolved with respect to the provided
+     * anchor.
+     *
+     * @param anchor
+     *            resolve paths with respect to this anchor
+     * @return Config object
+     * @throws IOException
+     *             when IO fails
+     */
+    public static Config defaultConfig(PathAnchor anchor) throws IOException {
+        return fromClasspath("sudachi.json", anchor);
     }
 
     /**
@@ -93,27 +115,20 @@ public class Config {
      * @return Config object
      * @throws IOException
      *             when IO fails
-     * @see Settings#fromClasspath(URL, SettingsAnchor)
+     * @see Settings#fromClasspath(URL, PathAnchor)
      */
     public static Config fromClasspath(String name) throws IOException {
-        return fromClasspath(name, Config.class.getClassLoader());
+        return fromClasspath(name, PathAnchor.classpath());
     }
 
-    /**
-     * Loads configuration from the first instance of the json file loaded from
-     * classpath. File is loaded by the provided classloader.
-     *
-     * @param name
-     *            json file name
-     * @param loader
-     *            classloader to get the resource
-     * @return parsed Config
-     * @throws IOException
-     *             when IO fails
-     * @see Settings#fromClasspath(URL, SettingsAnchor)
-     */
-    public static Config fromClasspath(String name, ClassLoader loader) throws IOException {
-        return fromClasspath(loader.getResource(name), loader);
+    public static Config fromClasspath(String name, PathAnchor anchor) throws IOException {
+        ClassLoader loader = Config.class.getClassLoader();
+        PathAnchor newAnchor = anchor.andThen(PathAnchor.classpath(loader));
+        URL resource = loader.getResource(name);
+        if (resource == null) {
+            throw new IllegalArgumentException("failed to find resource in classpath: " + name);
+        }
+        return fromClasspath(resource, newAnchor);
     }
 
     /**
@@ -127,28 +142,18 @@ public class Config {
      *             when IO fails
      */
     public static Config fromClasspath(URL resource) throws IOException {
-        return fromClasspath(resource, Config.class.getClassLoader());
+        return fromClasspath(resource, PathAnchor.classpath());
     }
 
-    /**
-     * Loads the explicit file from the classpath with the provided classloader.
-     * 
-     * @param resource
-     *            URL of the classpath resource
-     * @param loader
-     *            classloader to load the resource
-     * @return parsed Config
-     * @throws IOException
-     *             when IO fails
-     */
-    public static Config fromClasspath(URL resource, ClassLoader loader) throws IOException {
-        Settings settings = Settings.resolvedBy(SettingsAnchor.classpath(loader)).read(resource);
+    public static Config fromClasspath(URL resource, PathAnchor anchor) throws IOException {
+        Settings settings = Settings.fromClasspath(resource, anchor);
         return fromSettings(settings);
     }
 
     /**
-     * Loads the config from the filesystem.
-     * 
+     * Loads the config from the filesystem. Paths in the config will NOT be
+     * resolved with respect to classpath.
+     *
      * @param path
      *            {@link Path} to the config file
      * @return parsed Config
@@ -160,68 +165,80 @@ public class Config {
     }
 
     /**
+     * Loads the config from the filesystem. Paths in the config will be resolved
+     * with respect to the provided file.
+     *
+     * @param path
+     *            {@link Path} to the config file
+     * @param anchor
+     *            anchor for resolution
+     * @return parsed Config
+     * @throws IOException
+     *             when IO fails
+     */
+    public static Config fromFile(Path path, PathAnchor anchor) throws IOException {
+        return fromSettings(Settings.fromFile(path, anchor));
+    }
+
+    /**
      * Parses the config fom the provided json string
-     * 
+     *
      * @param json
      *            configuration as json string
      * @param anchor
      *            how to resolve paths
      * @return parsed Config
      */
-    public static Config fromJsonString(String json, SettingsAnchor anchor) {
+    public static Config fromJsonString(String json, PathAnchor anchor) {
         return fromSettings(Settings.parse(json, anchor));
     }
 
     /**
      * Converts untyped {@link Settings} to typed Config
-     * 
+     *
      * @param obj
      *            untyped configuration
      * @return parsed Config
      */
     public static Config fromSettings(Settings obj) {
-        return Config.empty().mergeSettings(obj);
+        return Config.empty().fallbackSettings(obj);
     }
 
     /**
      * Parses all config files with the specified name in the classpath, merging
      * them. Files are loaded with Config classloader.
-     * 
+     *
      * @param name
      *            classpath resource name
-     * @param mode
-     *            how to merge Config objects
      * @return merged Config
      * @throws IOException
      *             when IO fails
-     * @see #merge(Config, MergeMode)
+     * @see #withFallback(Config)
      */
-    public static Config fromClasspathMerged(String name, MergeMode mode) throws IOException {
-        return fromClasspathMerged(Config.class.getClassLoader(), name, mode);
+    public static Config fromClasspathMerged(String name) throws IOException {
+        return fromClasspathMerged(Config.class.getClassLoader(), name);
     }
 
     /**
      * Parses all config files with the specified name in the classpath, merging
      * them. Files are loaded with the provided classloader.
-     * 
+     *
      * @param classLoader
      *            it will be used to load resources
      * @param name
      *            classpath resource name
-     * @param mode
-     *            how to merge Config objects
      * @return merged Config
      * @throws IOException
      *             when IO fails
-     * @see #merge(Config, MergeMode)
+     * @see #withFallback(Config)
      */
-    public static Config fromClasspathMerged(ClassLoader classLoader, String name, MergeMode mode) throws IOException {
+    public static Config fromClasspathMerged(ClassLoader classLoader, String name) throws IOException {
         Enumeration<URL> resources = classLoader.getResources(name);
         Config result = Config.empty();
         long count = 0;
         while (resources.hasMoreElements()) {
             URL resource = resources.nextElement();
-            result = result.merge(Config.fromClasspath(resource), mode);
+            result = result.withFallback(Config.fromClasspath(resource));
             count += 1;
         }
         if (count == 0) {
@@ -230,50 +247,39 @@ public class Config {
         return result;
     }
 
-    private static <T> List<T> mergeList(MergeMode mode, List<T> dest, List<T> src) {
-        if (src != null) {
-            if (mode == MergeMode.REPLACE || dest == null) {
-                return src;
-            } else {
-                for (T newItem : src) {
-                    if (!dest.contains(newItem)) {
-                        dest.add(newItem);
-                    }
+    private static <T> List<T> mergeList(List<T> self, List<T> other) {
+        if (self == null) {
+            return other;
+        }
+        return self;
+    }
+
+    private static <T extends Plugin> List<PluginConf<T>> mergePluginList(List<PluginConf<T>> self,
+            List<PluginConf<T>> other) {
+        if (other != null) {
+            if (self == null) {
+                return other;
+            }
+            for (PluginConf<T> selfConf : self) {
+                Optional<PluginConf<T>> first = other.stream()
+                        .filter(p -> Objects.equals(p.clazzName, selfConf.clazzName)).findFirst();
+                if (first.isPresent()) {
+                    PluginConf<T> otherConf = first.get();
+                    selfConf.internal = selfConf.internal.withFallback(otherConf.internal);
                 }
             }
         }
-        return dest;
+        return self;
     }
 
-    private static <T extends Plugin> List<PluginConf<T>> mergePluginList(MergeMode mode, List<PluginConf<T>> dest,
-            List<PluginConf<T>> src) {
-        if (src != null) {
-            if (mode == MergeMode.REPLACE || dest == null) {
-                return src;
-            } else {
-                for (PluginConf<T> newItem : src) {
-                    Optional<PluginConf<T>> first = dest.stream()
-                            .filter(p -> Objects.equals(p.clazzName, newItem.clazzName)).findFirst();
-                    if (first.isPresent()) {
-                        PluginConf<T> pconf = first.get();
-                        pconf.internal = pconf.internal.merge(newItem.internal);
-                    } else {
-                        dest.add(newItem);
-                    }
-                }
-            }
+    private static <T> T mergeOne(T self, T other) {
+        if (self == null) {
+            return other;
         }
-        return dest;
+        return self;
     }
 
-    private static <T> T mergeOne(T dest, T src) {
-        if (src != null) {
-            return src;
-        }
-        return dest;
-    }
-
-    private Config mergeSettings(Settings settings) {
+    private Config fallbackSettings(Settings settings) {
 
         systemDictionary = settings.getResource("systemDict");
         characterDefinition = settings.getResource("characterDefinitionFile");
@@ -290,7 +296,7 @@ public class Config {
     /**
      * Set system dictionary to a filesystem one. The dictionary itself will not be
      * loaded, nor its existence will be checked.
-     * 
+     *
      * @param path
      *            Path to the resource
      * @return modified Config
@@ -303,7 +309,7 @@ public class Config {
     /**
      * Set system dictionary to a classpath one. The dictionary itself will not be
      * loaded, nor its existence will be checked.
-     * 
+     *
      * @param url
      *            URL to the resource
      * @return modified Config
@@ -315,7 +321,7 @@ public class Config {
 
     /**
      * Set system dictionary to a prebuilt one
-     * 
+     *
      * @param dic
      *            prebuilt System {@link BinaryDictionary}
      * @return modified Config
@@ -330,7 +336,7 @@ public class Config {
 
     /**
      * Makes the current list of user dictionaries empty.
-     * 
+     *
      * @return modified Config
      */
     public Config clearUserDictionaries() {
@@ -345,7 +351,7 @@ public class Config {
     /**
      * Adds a user dictionary from filesystem. The dictionary itself will not be
      * loaded, nor the file existence will be checked.
-     * 
+     *
      * @param path
      *            Path to the dictionary file
      * @return modified Config
@@ -361,7 +367,7 @@ public class Config {
     /**
      * Adds a user dictionary from classpath. The dictionary itself will not be
      * loaded, nor its existence will be checked.
-     * 
+     *
      * @param url
      *            URL of the classpath resource
      * @return modified Config
@@ -376,7 +382,7 @@ public class Config {
 
     /**
      * Adds a prebuilt user dictionary.
-     * 
+     *
      * @param dic
      *            prebuilt user {@link BinaryDictionary}
      * @return modified Config
@@ -388,13 +394,13 @@ public class Config {
         if (userDictionary == null) {
             userDictionary = new ArrayList<>();
         }
-        userDictionary.add(new Resource.Ready<>(dic));
+        userDictionary.add(Resource.ready(dic));
         return this;
     }
 
     /**
      * Sets the character definition to a filesystem file.
-     * 
+     *
      * @param path
      *            Path to the file.
      * @return modified Config
@@ -406,7 +412,7 @@ public class Config {
 
     /**
      * Sets the character definition file to a classpath resource.
-     * 
+     *
      * @param url
      *            URL to the classpath resource
      * @return modified Config
@@ -418,19 +424,19 @@ public class Config {
 
     /**
      * Sets the character definition file to a prebuilt object
-     * 
+     *
      * @param obj
      *            prebuilt {@link CharacterCategory}
      * @return modified Config
      */
     public Config characterDefinition(CharacterCategory obj) {
-        this.characterDefinition = new Resource.Ready<>(obj);
+        this.characterDefinition = Resource.ready(obj);
         return this;
     }
 
     /**
      * Sets whether empty morphemes are allowed
-     * 
+     *
      * @param allow
      *            whether to allow empty morphemes
      * @return modified Config
@@ -442,7 +448,7 @@ public class Config {
 
     /**
      * Adds one EditConnectionCostPlugin configuration
-     * 
+     *
      * @param clz
      *            plugin class
      * @param <T>
@@ -462,7 +468,7 @@ public class Config {
 
     /**
      * Adds one InputTextPlugin configuration
-     * 
+     *
      * @param clz
      *            plugin class
      * @param <T>
@@ -481,7 +487,7 @@ public class Config {
 
     /**
      * Adds one OovProviderPlugin configuration
-     * 
+     *
      * @param clz
      *            plugin class
      * @param <T>
@@ -499,7 +505,6 @@ public class Config {
     }
 
     /**
-     *
      * @return System dictionary as Resource
      */
     public Resource<BinaryDictionary> getSystemDictionary() {
@@ -507,7 +512,6 @@ public class Config {
     }
 
     /**
-     *
      * @return User dictionaries as a List of Resource
      */
     public List<Resource<BinaryDictionary>> getUserDictionaries() {
@@ -515,7 +519,6 @@ public class Config {
     }
 
     /**
-     *
      * @return Character definition as resource
      */
     public Resource<CharacterCategory> getCharacterDefinition() {
@@ -523,7 +526,6 @@ public class Config {
     }
 
     /**
-     *
      * @return list of EditConnectionCostPlugin configuration
      */
     public List<PluginConf<EditConnectionCostPlugin>> getEditConnectionCostPlugins() {
@@ -531,7 +533,6 @@ public class Config {
     }
 
     /**
-     *
      * @return list of InputTextPlugin configuration
      */
     public List<PluginConf<InputTextPlugin>> getInputTextPlugins() {
@@ -539,7 +540,6 @@ public class Config {
     }
 
     /**
-     *
      * @return list of OovProviderPlugin configuration
      */
     public List<PluginConf<OovProviderPlugin>> getOovProviderPlugins() {
@@ -547,7 +547,6 @@ public class Config {
     }
 
     /**
-     *
      * @return list of PathRewritePlugin configuration
      */
     public List<PluginConf<PathRewritePlugin>> getPathRewritePlugins() {
@@ -555,7 +554,6 @@ public class Config {
     }
 
     /**
-     *
      * @return whether empty morphemes are allowed
      */
     public boolean isAllowEmptyMorpheme() {
@@ -564,50 +562,52 @@ public class Config {
 
     /**
      * Merges this Config with another Config. Compared to
-     * {@link Settings#merge(Settings)}, merging is done for already resolved
+     * {@link Settings#withFallback(Settings)}, merging is done for already resolved
      * Configs and has no path resolution complexity.
-     *
-     * Generally, non-empty properties of the provided config will replace
-     * properties of the current Config. For lists, the behavior depends on
-     * mergeMode parameter. When using {@code MergeMode.REPLACE}, the behavior is
-     * the same as with scalar fields. When using {@code MergeMode.APPEND}, new
-     * values of the provided config will be appended to the current config.
-     *
-     * Prefer merging Configs over merging Settings.
-     *
+     * <p>
+     * Values of the current config will be preferred over values of the underlying
+     * config. Plugin configurations are always overridden. Prefer merging Configs
+     * over merging Settings.
+     * <p>
      * Can also be used to create a copy of a config as
-     * {@code Config.empty().merge(config)}.
+     * {@code Config.empty().withFallback(config)}.
      *
      * @param other
      *            Config to merge with the current one
-     * @param mergeMode
-     *            how to merge lists (plugins, user dictionaries)
      * @return modified Config
      */
-    public Config merge(Config other, MergeMode mergeMode) {
+    public Config withFallback(Config other) {
         systemDictionary = mergeOne(systemDictionary, other.systemDictionary);
-        userDictionary = mergeList(mergeMode, userDictionary, other.userDictionary);
+        userDictionary = mergeList(userDictionary, other.userDictionary);
         characterDefinition = mergeOne(characterDefinition, other.characterDefinition);
-        editConnectionCost = mergePluginList(mergeMode, editConnectionCost, other.editConnectionCost);
-        inputText = mergePluginList(mergeMode, inputText, other.inputText);
-        oovProviders = mergePluginList(mergeMode, oovProviders, other.oovProviders);
-        pathRewrite = mergePluginList(mergeMode, pathRewrite, other.pathRewrite);
+        editConnectionCost = mergePluginList(editConnectionCost, other.editConnectionCost);
+        inputText = mergePluginList(inputText, other.inputText);
+        oovProviders = mergePluginList(oovProviders, other.oovProviders);
+        pathRewrite = mergePluginList(pathRewrite, other.pathRewrite);
         allowEmptyMorpheme = mergeOne(allowEmptyMorpheme, other.allowEmptyMorpheme);
         return this;
     }
 
-    /**
-     * Specifies mode for Config merging
-     */
-    public enum MergeMode {
-        /**
-         * List contents will be appended
-         */
-        APPEND,
-        /**
-         * Present list will replace existing lists
-         */
-        REPLACE
+    @Override
+    public boolean equals(Object o) {
+        if (this == o)
+            return true;
+        if (o == null || getClass() != o.getClass())
+            return false;
+        Config config = (Config) o;
+        return Objects.equals(systemDictionary, config.systemDictionary)
+                && Objects.equals(userDictionary, config.userDictionary)
+                && Objects.equals(characterDefinition, config.characterDefinition)
+                && Objects.equals(editConnectionCost, config.editConnectionCost)
+                && Objects.equals(inputText, config.inputText) && Objects.equals(oovProviders, config.oovProviders)
+                && Objects.equals(pathRewrite, config.pathRewrite)
+                && Objects.equals(allowEmptyMorpheme, config.allowEmptyMorpheme);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(systemDictionary, userDictionary, characterDefinition, editConnectionCost, inputText,
+                oovProviders, pathRewrite, allowEmptyMorpheme);
     }
 
     @FunctionalInterface
@@ -617,8 +617,9 @@ public class Config {
 
     /**
      * Configuration for Sudachi Plugin.
-     * 
+     *
      * @param <T>
+     *            resulting resource type
      */
     public static class PluginConf<T extends Plugin> {
         String clazzName;
@@ -636,7 +637,7 @@ public class Config {
 
         /**
          * Create a new empty configuration for a plugin
-         * 
+         *
          * @param clz
          *            plugin class
          * @param <T>
@@ -649,27 +650,22 @@ public class Config {
 
         /**
          * Create the plugin instance
-         * 
+         *
          * @return plugin instance
          * @throws IllegalArgumentException
          *             when instantiation fails
          */
-        @SuppressWarnings("unchecked")
         public T instantiate() {
-            Class<T> clz;
+            Class<? extends T> clz;
             try {
-                clz = (Class<T>) Class.forName(clazzName);
+                clz = Class.forName(clazzName).asSubclass(parent);
             } catch (ClassNotFoundException e) {
                 throw new IllegalArgumentException("non-existent plugin class", e);
-            }
-            if (!parent.isAssignableFrom(clz)) {
-                throw new IllegalArgumentException(String.format("plugin %s did not have correct parent, expected %s",
-                        clazzName, parent.getName()));
             }
 
             T result;
             try {
-                Constructor<T> constructor = clz.getDeclaredConstructor();
+                Constructor<? extends T> constructor = clz.getDeclaredConstructor();
                 result = constructor.newInstance();
             } catch (InstantiationException | IllegalAccessException | NoSuchMethodException
                     | InvocationTargetException e) {
@@ -680,33 +676,89 @@ public class Config {
         }
 
         /**
-         * Add untyped key-value configuration to the plugin
-         * 
+         * Add a string value to the plugin configuration
+         *
          * @param key
          *            setting key
          * @param value
          *            setting value
-         * @return modified plugin
+         * @return current plugin instance
          */
         public PluginConf<T> add(String key, String value) {
             JsonObject obj = Json.createObjectBuilder().add(key, value).build();
-            Settings merged = internal.merge(new Settings(obj, SettingsAnchor.none()));
-            return new PluginConf<>(clazzName, merged, parent);
+            internal = new Settings(obj, PathAnchor.none()).withFallback(internal);
+            return this;
+        }
+
+        /**
+         * Add an int value to the plugin configuration
+         *
+         * @param key
+         *            setting key
+         * @param value
+         *            setting value
+         * @return current plugin instance
+         */
+        public PluginConf<T> add(String key, int value) {
+            JsonObject obj = Json.createObjectBuilder().add(key, value).build();
+            internal = new Settings(obj, PathAnchor.none()).withFallback(internal);
+            return this;
+        }
+
+        /**
+         * Add a string list value to the plugin configuration
+         *
+         * @param key
+         *            setting key
+         * @param values
+         *            setting value as a string array
+         * @return current plugin instance
+         */
+        public PluginConf<T> addList(String key, String... values) {
+            JsonArrayBuilder builder = Json.createArrayBuilder(Arrays.asList(values));
+            JsonObject obj = Json.createObjectBuilder().add(key, builder).build();
+            internal = new Settings(obj, PathAnchor.none()).withFallback(internal);
+            return this;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o)
+                return true;
+            if (o == null || getClass() != o.getClass())
+                return false;
+            PluginConf<?> that = (PluginConf<?>) o;
+            return Objects.equals(clazzName, that.clazzName) && Objects.equals(internal, that.internal)
+                    && Objects.equals(parent, that.parent);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(clazzName, internal, parent);
+        }
+
+        @Override
+        public String toString() {
+            return String.format("Plugin (%s) class: %s", parent.getSimpleName(), clazzName);
         }
     }
 
     /**
      * A container for the resource, allowing to combine lazy loading with providing
-     * prebuilt resources
-     * 
+     * prebuilt resources. Use {@link PathAnchor} to create resources.
+     *
      * @param <T>
      *            resource type of the built resource
+     *
+     * @see PathAnchor#filesystem(Path)
+     * @see PathAnchor#toResource(Path)
+     * @see PathAnchor#resource(String)
      */
     public static abstract class Resource<T> {
         /**
          * Create a real resource instance. File loading should be done inside the
          * creator function.
-         * 
+         *
          * @param creator
          *            creator function
          * @return created resource
@@ -753,7 +805,7 @@ public class Config {
 
         /**
          * Filesystem-backed resource
-         * 
+         *
          * @param <T>
          *            resource
          */
@@ -784,12 +836,28 @@ public class Config {
             Object repr() {
                 return path;
             }
+
+            @Override
+            public boolean equals(Object o) {
+                if (this == o)
+                    return true;
+                if (o == null || getClass() != o.getClass())
+                    return false;
+                Filesystem<?> that = (Filesystem<?>) o;
+                return path.equals(that.path);
+            }
+
+            @Override
+            public int hashCode() {
+                return Objects.hash(path);
+            }
         }
 
         /**
          * Resource which is in Java classpath.
-         * 
+         *
          * @param <T>
+         *            resulting resource type
          */
         public static class Classpath<T> extends Resource<T> {
             private final URL url;
@@ -820,14 +888,30 @@ public class Config {
             Object repr() {
                 return url;
             }
+
+            @Override
+            public boolean equals(Object o) {
+                if (this == o)
+                    return true;
+                if (o == null || getClass() != o.getClass())
+                    return false;
+                Classpath<?> classpath = (Classpath<?>) o;
+                return Objects.equals(url, classpath.url);
+            }
+
+            @Override
+            public int hashCode() {
+                return Objects.hash(url);
+            }
         }
 
         /**
          * Prebuilt resource.
-         * 
+         *
          * @param <T>
+         *            resulting resource type
          */
-        public static class Ready<T> extends Resource<T> {
+        static class Ready<T> extends Resource<T> {
             private final T object;
 
             public Ready(T object) {
@@ -843,6 +927,84 @@ public class Config {
             Object repr() {
                 return object;
             }
+
+            @Override
+            public boolean equals(Object o) {
+                if (this == o)
+                    return true;
+                if (o == null || getClass() != o.getClass())
+                    return false;
+                Ready<?> ready = (Ready<?>) o;
+                return Objects.equals(object, ready.object);
+            }
+
+            @Override
+            public int hashCode() {
+                return Objects.hash(object);
+            }
+        }
+
+        public static class NotFound<T> extends Resource<T> {
+            private final Path path;
+            private final PathAnchor anchor;
+
+            public NotFound(Path path, PathAnchor anchor) {
+                this.path = path;
+                this.anchor = anchor;
+            }
+
+            @Override
+            public T consume(IOFunction<Resource<T>, T> creator) throws IOException {
+                throw makeException();
+            }
+
+            @Override
+            public InputStream asInputStream() {
+                throw makeException();
+            }
+
+            @Override
+            public ByteBuffer asByteBuffer() {
+                throw makeException();
+            }
+
+            @Override
+            Object repr() {
+                return path;
+            }
+
+            private IllegalArgumentException makeException() {
+                String sb = "Failed to resolve file: " + path.toString() + "\n" + "Tried roots: " + anchor;
+                return new IllegalArgumentException(sb);
+            }
+
+            @Override
+            public boolean equals(Object o) {
+                if (this == o)
+                    return true;
+                if (o == null || getClass() != o.getClass())
+                    return false;
+                NotFound<?> notFound = (NotFound<?>) o;
+                return Objects.equals(path, notFound.path) && Objects.equals(anchor, notFound.anchor);
+            }
+
+            @Override
+            public int hashCode() {
+                return Objects.hash(path, anchor);
+            }
+        }
+
+        /**
+         * Create a resource wrapper for a prebuilt resource
+         * 
+         * @param object
+         *            prebuilt resource
+         * @return wrapper
+         * @param <T>
+         *            type of the prebuilt resource
+         */
+        public static <T> Resource<T> ready(T object) {
+            return new Ready<>(object);
         }
     }
 }

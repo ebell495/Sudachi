@@ -23,16 +23,19 @@ import java.util.*;
 public class LexiconSet implements Lexicon {
     static final int MAX_DICTIONARIES = 15;
 
-    List<Lexicon> lexicons = new ArrayList<>();
+    List<DoubleArrayLexicon> lexicons = new ArrayList<>();
+    final short systemPartOfSpeechSize;
     List<Short> posOffsets = new ArrayList<>();
 
-    public LexiconSet(Lexicon systemLexicon) {
-        lexicons.add(systemLexicon);
-        posOffsets.add((short) 0);
+    public LexiconSet(Lexicon systemLexicon, short systemPartOfSpeechSize) {
+        this.systemPartOfSpeechSize = systemPartOfSpeechSize;
+        add(systemLexicon, (short) 0);
     }
 
     public void add(Lexicon lexicon, short posOffset) {
-        lexicons.add(lexicon);
+        DoubleArrayLexicon daLexicon = (DoubleArrayLexicon) lexicon;
+        daLexicon.setDictionaryId(lexicons.size());
+        lexicons.add(daLexicon);
         posOffsets.add(posOffset);
     }
 
@@ -129,8 +132,8 @@ public class LexiconSet implements Lexicon {
         int internalId = WordId.word(wordId);
         WordInfo wordInfo = lexicons.get(dictionaryId).getWordInfo(internalId);
         short posId = wordInfo.getPOSId();
-        if (dictionaryId > 0 && posId >= posOffsets.get(1)) { // user defined part-of-speech
-            wordInfo.setPOSId((short) (wordInfo.getPOSId() - posOffsets.get(1) + posOffsets.get(dictionaryId)));
+        if (dictionaryId > 0 && posId >= systemPartOfSpeechSize) { // user defined part-of-speech
+            wordInfo.setPOSId((short) (wordInfo.getPOSId() - systemPartOfSpeechSize + posOffsets.get(dictionaryId)));
         }
         convertSplit(wordInfo.getAunitSplit(), dictionaryId);
         convertSplit(wordInfo.getBunitSplit(), dictionaryId);
@@ -165,5 +168,9 @@ public class LexiconSet implements Lexicon {
                 split[i] = buildWordId(dictionaryId, getWordId(split[i]));
             }
         }
+    }
+
+    public WordLookup makeLookup() {
+        return new WordLookup(this.lexicons);
     }
 }

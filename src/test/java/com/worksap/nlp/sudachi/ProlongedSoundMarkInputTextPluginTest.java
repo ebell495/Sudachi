@@ -16,6 +16,7 @@
 
 package com.worksap.nlp.sudachi;
 
+import static com.worksap.nlp.sudachi.MockGrammar.defaultCharCategory;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertArrayEquals;
@@ -41,11 +42,11 @@ public class ProlongedSoundMarkInputTextPluginTest {
     public void setUp() throws IOException {
         plugin = new ProlongedSoundMarkInputTextPlugin();
 
-        Settings settings = Settings.fromClasspath(getClass().getResource("/sudachi.json"), SettingsAnchor.none());
+        Settings settings = Settings.fromClasspath(getClass().getResource("/sudachi.json"), PathAnchor.none());
         List<JsonObject> list = settings.getList("inputTextPlugin", JsonObject.class);
         for (JsonObject p : list) {
             if (p.getString("class").equals("com.worksap.nlp.sudachi.ProlongedSoundMarkInputTextPlugin")) {
-                plugin.setSettings(new Settings(p, SettingsAnchor.none()));
+                plugin.setSettings(new Settings(p, PathAnchor.none()));
                 break;
             }
         }
@@ -170,7 +171,7 @@ public class ProlongedSoundMarkInputTextPluginTest {
         assertThat(text.getOriginalIndex(18), is(12));
     }
 
-    class MockGrammar implements Grammar {
+    static class MockGrammar implements Grammar {
         @Override
         public int getPartOfSpeechSize() {
             return 0;
@@ -207,14 +208,7 @@ public class ProlongedSoundMarkInputTextPluginTest {
 
         @Override
         public CharacterCategory getCharacterCategory() {
-            CharacterCategory charCategory = new CharacterCategory();
-            try {
-                charCategory.readCharacterDefinition(
-                        DefaultInputTextPluginTest.class.getClassLoader().getResource("char.def").getPath());
-            } catch (IOException ex) {
-                ex.printStackTrace();
-            }
-            return charCategory;
+            return defaultCharCategory();
         }
 
         @Override

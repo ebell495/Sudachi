@@ -16,22 +16,19 @@
 
 package com.worksap.nlp.sudachi;
 
-import java.io.FileInputStream;
+import com.worksap.nlp.sudachi.dictionary.CategoryType;
+import com.worksap.nlp.sudachi.dictionary.Grammar;
+import com.worksap.nlp.sudachi.dictionary.POS;
+import com.worksap.nlp.sudachi.dictionary.WordInfo;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.LineNumberReader;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.EnumMap;
-import java.util.List;
-import java.util.Map;
+import java.nio.file.Paths;
+import java.util.*;
 import java.util.regex.Pattern;
-
-import com.worksap.nlp.sudachi.dictionary.CategoryType;
-import com.worksap.nlp.sudachi.dictionary.Grammar;
-import com.worksap.nlp.sudachi.dictionary.WordInfo;
 
 /**
  * Provides the OOVs in the same way as MeCab.
@@ -77,16 +74,16 @@ class MeCabOovProviderPlugin extends OovProviderPlugin {
 
     @Override
     public void setUp(Grammar grammar) throws IOException {
-        String charDef = settings.getPath("charDef");
+        Config.Resource<Object> charDef = settings.getResource("charDef");
         readCharacterProperty(charDef);
-        String unkDef = settings.getPath("unkDef");
-        readOOV(unkDef, grammar);
+        Config.Resource<Object> unkDef = settings.getResource("unkDef");
+        readOOV(unkDef, grammar, settings.getString(USER_POS, USER_POS_FORBID));
     }
 
     @Override
-    public List<LatticeNode> provideOOV(InputText inputText, int offset, boolean hasOtherWords) {
-        List<LatticeNode> nodes = new ArrayList<>();
+    public int provideOOV(InputText inputText, int offset, long otherWords, List<LatticeNodeImpl> nodes) {
         int length = inputText.getCharCategoryContinuousLength(offset);
+        int added = 0;
         if (length > 0) {
             for (CategoryType type : inputText.getCharCategoryTypes(offset)) {
                 CategoryInfo cinfo = categories.get(type);
@@ -98,14 +95,15 @@ class MeCabOovProviderPlugin extends OovProviderPlugin {
                 if (oovs == null) {
                     continue;
                 }
-                if (cinfo.isGroup && (cinfo.isInvoke || !hasOtherWords)) {
+                if (cinfo.isGroup && (cinfo.isInvoke || otherWords == 0)) {
                     String s = inputText.getSubstring(offset, offset + length);
                     for (OOV oov : oovs) {
                         nodes.add(getOOVNode(s, oov, length));
+                        added += 1;
                     }
                     llength -= 1;
                 }
-                if (cinfo.isInvoke || !hasOtherWords) {
+                if (cinfo.isInvoke || otherWords == 0) {
                     for (int i = 1; i <= cinfo.length; i++) {
                         int sublength = inputText.getCodePointsOffsetLength(offset, i);
                         if (sublength > llength) {
@@ -114,16 +112,17 @@ class MeCabOovProviderPlugin extends OovProviderPlugin {
                         String s = inputText.getSubstring(offset, offset + sublength);
                         for (OOV oov : oovs) {
                             nodes.add(getOOVNode(s, oov, sublength));
+                            added += 1;
                         }
                     }
                 }
             }
         }
-        return nodes;
+        return added;
     }
 
-    LatticeNode getOOVNode(String text, OOV oov, int length) {
-        LatticeNode node = createNode();
+    LatticeNodeImpl getOOVNode(String text, OOV oov, int length) {
+        LatticeNodeImpl node = createNode();
         node.setParameter(oov.leftId, oov.rightId, oov.cost);
         WordInfo info = new WordInfo(text, (short) length, oov.posId, text, text, "");
         node.setWordInfo(info);
@@ -133,8 +132,11 @@ class MeCabOovProviderPlugin extends OovProviderPlugin {
     private static final Pattern PATTERN_SPACES = Pattern.compile("\\s+");
     private static final Pattern PATTERN_EMPTY_OR_SPACES = Pattern.compile("\\s*");
 
-    void readCharacterProperty(String charDef) throws IOException {
-        try (InputStream input = (charDef == null) ? openFromJar("char.def") : new FileInputStream(charDef);
+    <T> void readCharacterProperty(Config.Resource<T> charDef) throws IOException {
+        if (charDef == null) {
+            charDef = settings.base.toResource(Paths.get("char.def"));
+        }
+        try (InputStream input = charDef.asInputStream();
                 InputStreamReader isReader = new InputStreamReader(input, StandardCharsets.UTF_8);
                 LineNumberReader reader = new LineNumberReader(isReader)) {
             for (String line = reader.readLine(); line != null; line = reader.readLine()) {
@@ -166,8 +168,11 @@ class MeCabOovProviderPlugin extends OovProviderPlugin {
         }
     }
 
-    void readOOV(String unkDef, Grammar grammar) throws IOException {
-        try (InputStream input = (unkDef == null) ? openFromJar("unk.def") : new FileInputStream(unkDef);
+    <T> void readOOV(Config.Resource<T> unkDef, Grammar grammar, String userPosMode) throws IOException {
+        if (unkDef == null) {
+            unkDef = settings.base.toResource(Paths.get("unk.def"));
+        }
+        try (InputStream input = unkDef.asInputStream();
                 InputStreamReader isReader = new InputStreamReader(input, StandardCharsets.UTF_8);
                 LineNumberReader reader = new LineNumberReader(isReader)) {
             for (String line = reader.readLine(); line != null; line = reader.readLine()) {
@@ -190,15 +195,11 @@ class MeCabOovProviderPlugin extends OovProviderPlugin {
                 oov.leftId = Short.parseShort(cols[1]);
                 oov.rightId = Short.parseShort(cols[2]);
                 oov.cost = Short.parseShort(cols[3]);
-                List<String> pos = Arrays.asList(cols[4], cols[5], cols[6], cols[7], cols[8], cols[9]);
-                oov.posId = grammar.getPartOfSpeechId(pos);
+                POS pos = new POS(cols[4], cols[5], cols[6], cols[7], cols[8], cols[9]);
+                oov.posId = posIdOf(grammar, pos, userPosMode);
 
-                oovList.computeIfAbsent(type, t -> new ArrayList<OOV>()).add(oov);
+                oovList.computeIfAbsent(type, t -> new ArrayList<>()).add(oov);
             }
         }
-    }
-
-    private InputStream openFromJar(String path) {
-        return MeCabOovProviderPlugin.class.getClassLoader().getResourceAsStream(path);
     }
 }

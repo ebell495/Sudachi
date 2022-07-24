@@ -16,35 +16,27 @@
 
 package com.worksap.nlp.sudachi;
 
+import javax.json.*;
+import javax.json.stream.JsonParsingException;
 import java.io.IOException;
 import java.io.StringReader;
 import java.net.URL;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Objects;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
-
-import javax.json.Json;
-import javax.json.JsonArray;
-import javax.json.JsonArrayBuilder;
-import javax.json.JsonNumber;
-import javax.json.JsonObject;
-import javax.json.JsonObjectBuilder;
-import javax.json.JsonReader;
-import javax.json.JsonString;
-import javax.json.JsonStructure;
-import javax.json.JsonValue;
-import javax.json.stream.JsonParsingException;
 
 /**
  * An untyped collection of settings. This class handles parsing a JSON object
  * and using its properties as settings.
  *
- * <h3>Paths</h3>
  * <p>
  * There are multiple settings which can be paths, and paths are resolved using
- * {@link SettingsAnchor}s. Paths can be resolved with respect to classpath or
+ * {@link PathAnchor}s. Paths can be resolved with respect to classpath or
  * filesystem. SettingsAnchors also can be chained, returning the first existing
  * path.
  * </p>
@@ -85,17 +77,17 @@ import javax.json.stream.JsonParsingException;
  *
  *
  * @see Config
- * @see SettingsAnchor
+ * @see PathAnchor
  */
 public class Settings {
     private static final Logger logger = Logger.getLogger(Settings.class.getName());
 
     JsonObject root;
-    SettingsAnchor base;
+    PathAnchor base;
 
-    Settings(JsonObject root, SettingsAnchor base) {
-        this.root = root;
-        this.base = base;
+    Settings(JsonObject root, PathAnchor base) {
+        this.root = Objects.requireNonNull(root);
+        this.base = Objects.requireNonNull(base);
     }
 
     /**
@@ -103,17 +95,17 @@ public class Settings {
      * @return empty object
      */
     public static Settings empty() {
-        return resolvedBy(SettingsAnchor.none());
+        return resolvedBy(PathAnchor.none());
     }
 
     /**
-     * Returns empty object resolved by the provided {@link SettingsAnchor}
+     * Returns empty object resolved by the provided {@link PathAnchor}
      * 
      * @param resolver
      *            anchor
      * @return Settings object
      */
-    public static Settings resolvedBy(SettingsAnchor resolver) {
+    public static Settings resolvedBy(PathAnchor resolver) {
         return new Settings(JsonObject.EMPTY_JSON_OBJECT, resolver);
     }
 
@@ -126,13 +118,13 @@ public class Settings {
      * @return modified Settings object
      * @throws IOException
      *             if IO fails
-     * @see #parse(String, SettingsAnchor)
+     * @see #parse(String, PathAnchor)
      */
     public Settings read(Path file) throws IOException {
         logger.fine(() -> String.format("reading settings from %s", file));
         String data = StringUtil.readFully(file);
         Settings settings = parse(data, this.base);
-        return merge(settings);
+        return settings.withFallback(this);
     }
 
     /**
@@ -144,13 +136,13 @@ public class Settings {
      * @return modified Settings object
      * @throws IOException
      *             if IO fails
-     * @see #parse(String, SettingsAnchor)
+     * @see #parse(String, PathAnchor)
      */
     public Settings read(URL resource) throws IOException {
         logger.fine(() -> String.format("reading settings from %s", resource));
         String data = StringUtil.readFully(resource);
         Settings settings = parse(data, this.base);
-        return merge(settings);
+        return settings.withFallback(this);
     }
 
     /**
@@ -158,19 +150,20 @@ public class Settings {
      * <p>
      *
      * @param path
-     *            will add additional {@link SettingsAnchor} to this path if not
+     *            will add additional {@link PathAnchor} to this path if not
      *            {@code null}
      * @param json
      *            JSON string
      * @return Settings object
      * @throws IllegalArgumentException
      *             if the parsing is failed
-     * @deprecated use {@link #parse(String, SettingsAnchor)}, this method will be
+     * @deprecated use {@link #parse(String, PathAnchor)}, this method will be
      *             removed in 1.0.0
      */
     @Deprecated
     public static Settings parseSettings(String path, String json) {
-        SettingsAnchor anchor = path == null ? SettingsAnchor.none() : SettingsAnchor.filesystem(Paths.get(path));
+        PathAnchor anchor = path == null ? PathAnchor.none() : PathAnchor.filesystem(Paths.get(path));
+        anchor = anchor.andThen(PathAnchor.classpath());
         return parse(json, anchor);
     }
 
@@ -182,14 +175,14 @@ public class Settings {
      * @param json
      *            JSON object as a String
      * @param resolver
-     *            paths will be resolved against this {@link SettingsAnchor}
+     *            paths will be resolved against this {@link PathAnchor}
      * @return SettingsObject
      *
-     * @see SettingsAnchor#none()
-     * @see SettingsAnchor#filesystem(Path)
-     * @see SettingsAnchor#classpath()
+     * @see PathAnchor#none()
+     * @see PathAnchor#filesystem(Path)
+     * @see PathAnchor#classpath()
      */
-    public static Settings parse(String json, SettingsAnchor resolver) {
+    public static Settings parse(String json, PathAnchor resolver) {
         try (JsonReader reader = Json.createReader(new StringReader(json))) {
             JsonStructure rootStr = reader.read();
             if (rootStr instanceof JsonObject) {
@@ -197,11 +190,11 @@ public class Settings {
                 String basePath = root.getString("path", null);
                 if (basePath == null) {
                     if (resolver == null) {
-                        resolver = SettingsAnchor.none();
+                        resolver = PathAnchor.none();
                     }
                     return new Settings(root, resolver);
                 } else {
-                    SettingsAnchor pathResolver = SettingsAnchor.filesystem(Paths.get(basePath));
+                    PathAnchor pathResolver = PathAnchor.filesystem(Paths.get(basePath));
                     if (resolver != null) {
                         pathResolver = pathResolver.andThen(resolver);
                     }
@@ -224,10 +217,10 @@ public class Settings {
      * @return Settings object
      * @throws IOException
      *             if IO fails
-     * @see #parse(String, SettingsAnchor)
+     * @see #parse(String, PathAnchor)
      */
     public static Settings fromFile(Path path) throws IOException {
-        return fromFile(path, SettingsAnchor.filesystem(path.getParent()));
+        return fromFile(path, PathAnchor.filesystem(path.getParent()));
     }
 
     /**
@@ -241,9 +234,9 @@ public class Settings {
      * @return Settings object
      * @throws IOException
      *             if IO fails
-     * @see #parse(String, SettingsAnchor)
+     * @see #parse(String, PathAnchor)
      */
-    public static Settings fromFile(Path path, SettingsAnchor resolver) throws IOException {
+    public static Settings fromFile(Path path, PathAnchor resolver) throws IOException {
         return resolvedBy(resolver).read(path);
     }
 
@@ -257,9 +250,9 @@ public class Settings {
      * @return Settings object
      * @throws IOException
      *             if IO fails
-     * @see #parse(String, SettingsAnchor)
+     * @see #parse(String, PathAnchor)
      */
-    public static Settings fromClasspath(URL url, SettingsAnchor resolver) throws IOException {
+    public static Settings fromClasspath(URL url, PathAnchor resolver) throws IOException {
         return resolvedBy(resolver).read(url);
     }
 
@@ -291,7 +284,8 @@ public class Settings {
      *            the key
      * @param defaultValue
      *            the default mapping of the key
-     * @return the value or {@code defaultValue} if this settings has no mapping
+     * @return the value or {@code defaultValue} if this settings object has no
+     *         mapping
      * @throws IllegalArgumentException
      *             if the value is not a string
      */
@@ -406,7 +400,7 @@ public class Settings {
 
     /**
      * Returns resolved path mapped by the key, or {@code null} if the Settings
-     * contains no such key. Paths are resolved using {@link SettingsAnchor}.
+     * contains no such key. Paths are resolved using {@link PathAnchor}.
      *
      * Strongly prefer using {@link #getResource(String)} over this method, because
      * this method can't handle classpath resources.
@@ -505,7 +499,7 @@ public class Settings {
      *
      * @param setting
      *            the key
-     * @return the value or an empty list if this settings has no mapping
+     * @return the value or an empty list if this settings object has no mapping
      * @throws IllegalArgumentException
      *             if the value is not an array of strings
      */
@@ -519,13 +513,14 @@ public class Settings {
 
     /**
      * Returns the value as the boolean to which the specified key is mapped, or
-     * {@code defaultValue} if this settings contains no mapping for the key.
+     * {@code defaultValue} if this settings object contains no mapping for the key.
      *
      * @param setting
      *            the key
      * @param defaultValue
      *            the default mapping of the key
-     * @return the value or {@code defaultValue} if this settings has no mapping
+     * @return the value or {@code defaultValue} if this settings object has no
+     *         mapping
      */
     public Boolean getBoolean(String setting, Boolean defaultValue) {
         try {
@@ -556,7 +551,7 @@ public class Settings {
             JsonObject inner = key.asJsonObject();
             String className = inner.getString("class");
             if (className == null) {
-                throw new IllegalArgumentException(String.format("subobject for %s didn't have class key", name));
+                throw new IllegalArgumentException(String.format("sub-object for %s didn't have class key", name));
             }
             result.add(new Config.PluginConf<>(className, new Settings(inner, base), cls));
         }
@@ -565,60 +560,82 @@ public class Settings {
 
     /**
      * Merge another Settings object with this object, returning a new Settings
-     * object. Scalar values of this object will be replaced by values of another
-     * object, arrays will be appended.
+     * object. Scalar values and arrays of this object will be replaced by values of
+     * another object.
      *
      * The current object will not be modified.
      *
-     * {@link SettingsAnchor} of the another object will be merged with this one,
-     * chaining them using {@link SettingsAnchor#andThen(SettingsAnchor)} method,
-     * using the anchor of the passed Settings object before the current anchor.
+     * {@link PathAnchor} of the another object will be merged with this one,
+     * chaining them using {@link PathAnchor#andThen(PathAnchor)} method, using the
+     * anchor of the passed Settings object before the current anchor.
      *
      * This is advanced API, in most cases Configs should be merged instead.
      *
      * @param settings
      *            another Settings object to merge
      * @return new Settings object, containing merge results
-     * @see Config#merge(Config, Config.MergeMode)
+     * @deprecated use {@link Settings#withFallback(Settings)} instead
      */
+    @Deprecated
     public Settings merge(Settings settings) {
-        JsonObjectBuilder newRoot = Json.createObjectBuilder();
-        for (Map.Entry<String, JsonValue> thisEntry : this.root.entrySet()) {
-            String thisKey = thisEntry.getKey();
-            JsonValue thisValue = thisEntry.getValue();
-            if (settings.root.containsKey(thisKey)) {
-                JsonValue value = settings.root.get(thisKey);
-                if (thisValue instanceof JsonString || thisValue instanceof JsonNumber
-                        || thisValue instanceof JsonObject) {
-                    newRoot.add(thisKey, value);
-                } else if (thisValue instanceof JsonArray) {
-                    if (value instanceof JsonArray) {
-                        newRoot.add(thisKey, mergeArray((JsonArray) thisValue, (JsonArray) value));
-                    } else {
-                        newRoot.add(thisKey, value);
-                    }
-                }
-            } else {
-                newRoot.add(thisKey, thisValue);
-            }
-        }
-        for (Map.Entry<String, JsonValue> entry : settings.root.entrySet()) {
-            if (!this.root.containsKey(entry.getKey())) {
-                newRoot.add(entry.getKey(), entry.getValue());
-            }
-        }
-        return new Settings(newRoot.build(), settings.base.andThen(base));
+        return settings.withFallback(this);
     }
 
-    private JsonArray mergeArray(JsonArray dest, JsonArray src) {
-        if (src.isEmpty()) {
-            return dest;
-        }
-        JsonArrayBuilder newList = Json.createArrayBuilder(dest);
-        for (JsonValue item : src) {
-            newList.add(item);
-        }
-        return newList.build();
+    /**
+     * Merge another Settings object with this object, returning a new Settings
+     * object. Scalar values and arrays of another object will be added to the
+     * config if they are not present yet.
+     *
+     * The current object will not be modified.
+     *
+     * {@link PathAnchor} of the another object will be merged with this one,
+     * chaining them using {@link PathAnchor#andThen(PathAnchor)} method, using the
+     * anchor of the passed Settings object after the current anchor.
+     *
+     * This is advanced API, in most cases Configs should be merged instead.
+     *
+     * @param other
+     *            another Settings object to merge
+     * @return new Settings object, containing merge results
+     * @see Config#withFallback(Config)
+     */
+    public Settings withFallback(Settings other) {
+        JsonObject merged = mergeObject(other.root, this.root);
+        return new Settings(merged, base.andThen(other.base));
     }
 
+    private static JsonObject mergeObject(JsonObject left, JsonObject right) {
+        if (left.isEmpty()) {
+            return right;
+        }
+        if (right.isEmpty()) {
+            return left;
+        }
+        JsonObjectBuilder builder = Json.createObjectBuilder(right);
+        for (String leftKey : left.keySet()) {
+            JsonValue leftValue = left.get(leftKey);
+            JsonValue rightValue = right.get(leftKey);
+            if (rightValue == null) {
+                builder.add(leftKey, leftValue);
+            } else if (leftValue instanceof JsonObject && rightValue instanceof JsonObject) {
+                builder.add(leftKey, mergeObject((JsonObject) leftValue, (JsonObject) rightValue));
+            }
+        }
+        return builder.build();
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o)
+            return true;
+        if (o == null || getClass() != o.getClass())
+            return false;
+        Settings settings = (Settings) o;
+        return root.equals(settings.root) && base.equals(settings.base);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(root, base);
+    }
 }

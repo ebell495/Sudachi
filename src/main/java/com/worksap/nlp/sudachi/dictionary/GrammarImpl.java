@@ -28,6 +28,7 @@ public class GrammarImpl implements Grammar {
 
     private final ByteBuffer bytes;
     private final List<POS> posList;
+    private final short originalPosSize;
     private boolean isCopiedConnectTable;
     private Connection matrix;
 
@@ -50,6 +51,7 @@ public class GrammarImpl implements Grammar {
             }
             posList.add(new POS(pos));
         }
+        originalPosSize = (short) posList.size();
         int leftIdSize = bytes.getShort(offset);
         offset += 2;
         int rightIdSize = bytes.getShort(offset);
@@ -65,6 +67,7 @@ public class GrammarImpl implements Grammar {
     public GrammarImpl() {
         bytes = ByteBuffer.allocate(0);
         posList = Collections.emptyList();
+        originalPosSize = 0;
     }
 
     public int storageSize() {
@@ -78,6 +81,10 @@ public class GrammarImpl implements Grammar {
     @Override
     public int getPartOfSpeechSize() {
         return posList.size();
+    }
+
+    public short getSystemPartOfSpeechSize() {
+        return originalPosSize;
     }
 
     @Override
@@ -137,5 +144,24 @@ public class GrammarImpl implements Grammar {
 
     public Connection getConnection() {
         return this.matrix;
+    }
+
+    /**
+     * Registers a POS tag in the grammar definition and returns its id. If the POS
+     * tag was already present, return its id. Should be called only during the
+     * setup phase.
+     *
+     * @param pos
+     *            tag to register
+     * @return id of registered tag or id of existing tag
+     */
+    public short registerPOS(POS pos) {
+        int i = posList.indexOf(pos);
+        if (i == -1) {
+            int len = posList.size();
+            posList.add(pos);
+            return (short) len;
+        }
+        return (short) i;
     }
 }

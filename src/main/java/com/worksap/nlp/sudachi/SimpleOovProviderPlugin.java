@@ -16,14 +16,16 @@
 
 package com.worksap.nlp.sudachi;
 
-import java.util.Collections;
-import java.util.List;
-
 import com.worksap.nlp.sudachi.dictionary.Grammar;
+import com.worksap.nlp.sudachi.dictionary.POS;
 import com.worksap.nlp.sudachi.dictionary.WordInfo;
 
+import java.util.List;
+
 /**
- * Provides the OOVs.
+ * Provides the OOVs which consists of a maximum run of characters of a single
+ * character class. Does not produce OOVs if there was any other word at the
+ * boundary.
  *
  * <p>
  * The following is an example of settings.
@@ -53,32 +55,27 @@ class SimpleOovProviderPlugin extends OovProviderPlugin {
 
     @Override
     public void setUp(Grammar grammar) {
-        List<String> oovPOSStrings = settings.getStringList("oovPOS");
+        POS pos = new POS(settings.getStringList("oovPOS"));
         leftId = (short) settings.getInt("leftId");
         rightId = (short) settings.getInt("rightId");
         cost = (short) settings.getInt("cost");
-
-        if (oovPOSStrings.isEmpty()) {
-            throw new IllegalArgumentException("oovPOS is not specified");
-        }
-        oovPOSId = grammar.getPartOfSpeechId(oovPOSStrings);
-        if (oovPOSId < 0) {
-            throw new IllegalArgumentException("oovPOS is invalid: " + String.join(",", oovPOSStrings));
-        }
+        String userPosMode = settings.getString(USER_POS, USER_POS_FORBID);
+        oovPOSId = posIdOf(grammar, pos, userPosMode);
     }
 
     @Override
-    public List<LatticeNode> provideOOV(InputText inputText, int offset, boolean hasOtherWords) {
-        if (!hasOtherWords) {
-            LatticeNode node = createNode();
+    public int provideOOV(InputText inputText, int offset, long otherWords, List<LatticeNodeImpl> nodes) {
+        if (otherWords == 0) {
+            LatticeNodeImpl node = createNode();
             node.setParameter(leftId, rightId, cost);
             int length = inputText.getWordCandidateLength(offset);
             String s = inputText.getSubstring(offset, offset + length);
             WordInfo info = new WordInfo(s, (short) length, oovPOSId, s, s, "");
             node.setWordInfo(info);
-            return Collections.singletonList(node);
+            nodes.add(node);
+            return 1;
         } else {
-            return Collections.emptyList();
+            return 0;
         }
     }
 }

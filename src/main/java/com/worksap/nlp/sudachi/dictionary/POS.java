@@ -18,6 +18,7 @@ package com.worksap.nlp.sudachi.dictionary;
 
 import java.util.AbstractList;
 import java.util.Arrays;
+import java.util.List;
 
 /**
  * Part-of-Speech
@@ -39,7 +40,8 @@ public final class POS extends AbstractList<String> {
             throw new IllegalArgumentException("pos must not be null");
         }
         if (elems.length != DEPTH) {
-            throw new IllegalArgumentException("pos must have exactly six elements");
+            throw new IllegalArgumentException(String.format("pos must have exactly 6 elements, was %s: %s",
+                    elems.length, String.join(",", elems)));
         }
         for (String e : elems) {
             if (e == null) {
@@ -52,6 +54,17 @@ public final class POS extends AbstractList<String> {
             }
         }
         this.elems = elems;
+    }
+
+    /**
+     * Creates new POS instance from elements. Elements must be 6-length string
+     * list.
+     * 
+     * @param elems
+     *            POS object elements
+     */
+    public POS(List<String> elems) {
+        this(elems.toArray(new String[0]));
     }
 
     @Override

@@ -20,13 +20,16 @@ import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.StringJoiner;
 import java.util.logging.Logger;
 
 /**
  * Resolves paths of {@link Settings}, when converting them to {@link Config}s.
  * When creating {@link com.worksap.nlp.sudachi.Config.Resource} objects, paths
- * will be resolved relative to an anchor, which is bound to Settings.
+ * will be resolved relative to an anchor, which is bound to a Settings object.
  *
  * <p>
  * There are three types of anchors:
@@ -38,21 +41,22 @@ import java.util.logging.Logger;
  * <li>{@link Classpath} which will resolve classpath resources</li>
  * </ul>
  * Use static methods for their creation.
- * </p>
  *
- * It is also possible to chain anchors using {@link #andThen(SettingsAnchor)}
+ * <p>
+ * It is also possible to chain anchors using {@link #andThen(PathAnchor)}
  * method, which will resolve the first existing path.
  */
-public abstract class SettingsAnchor {
-    private static final Logger logger = Logger.getLogger(SettingsAnchor.class.getName());
+public abstract class PathAnchor {
+    private static final Logger logger = Logger.getLogger(PathAnchor.class.getName());
 
     /**
-     * Create an anchor for the root of classpath, using Settings classloader.
+     * Create an anchor for the root of classpath, using the classloader of the
+     * Config class.
      * 
      * @return classpath anchor
      */
-    public static SettingsAnchor classpath() {
-        return classpath(Settings.class.getClassLoader());
+    public static PathAnchor classpath() {
+        return classpath(Config.class.getClassLoader());
     }
 
     /**
@@ -62,7 +66,7 @@ public abstract class SettingsAnchor {
      *            provided classloader
      * @return classpath anchor
      */
-    public static SettingsAnchor classpath(ClassLoader loader) {
+    public static PathAnchor classpath(ClassLoader loader) {
         return classpath("", loader);
     }
 
@@ -75,7 +79,7 @@ public abstract class SettingsAnchor {
      *            provided classloader
      * @return classpath anchor
      */
-    public static SettingsAnchor classpath(String prefix, ClassLoader loader) {
+    public static PathAnchor classpath(String prefix, ClassLoader loader) {
         return new Classpath(Paths.get(prefix), loader);
     }
 
@@ -86,7 +90,7 @@ public abstract class SettingsAnchor {
      *            provided class
      * @return classpath anchor
      */
-    public static SettingsAnchor classpath(Class<?> clz) {
+    public static PathAnchor classpath(Class<?> clz) {
         String name = clz.getName();
         String path = name.replace(".", "/");
         return new Classpath(Paths.get(path).getParent(), clz.getClassLoader());
@@ -96,11 +100,28 @@ public abstract class SettingsAnchor {
      * Create a filesystem anchor relative to the path
      * 
      * @param path
-     *            path
+     *            base path to resolve other paths upon
      * @return filesystem anchor
      */
-    public static SettingsAnchor filesystem(Path path) {
+    public static PathAnchor filesystem(Path path) {
+        if (path == null) {
+            throw new NullPointerException("passed path was null");
+        }
         return new Filesystem(path);
+    }
+
+    /**
+     * Create a filesystem anchor relative to the path
+     * 
+     * @param path
+     *            base path to resolve other paths upon
+     * @return filesystem anchor
+     */
+    public static PathAnchor filesystem(String path) {
+        if (path == null) {
+            throw new NullPointerException("passed path was null");
+        }
+        return filesystem(Paths.get(path));
     }
 
     /**
@@ -108,7 +129,7 @@ public abstract class SettingsAnchor {
      * 
      * @return filesystem anchor
      */
-    public static SettingsAnchor none() {
+    public static PathAnchor none() {
         return None.INSTANCE;
     }
 
@@ -119,7 +140,7 @@ public abstract class SettingsAnchor {
      *            path suffix
      * @return full path. It may not be usable for classpath.
      */
-    Path resolve(String part) {
+    public Path resolve(String part) {
         return Paths.get(part);
     }
 
@@ -130,8 +151,12 @@ public abstract class SettingsAnchor {
      *            fully resolved path
      * @return true if the path points to an existing file
      */
-    boolean exists(Path path) {
-        return Files.exists(path);
+    public boolean exists(Path path) {
+        try {
+            return Files.exists(path);
+        } catch (SecurityException e) {
+            return false;
+        }
     }
 
     /**
@@ -143,8 +168,24 @@ public abstract class SettingsAnchor {
      *            type of the resource
      * @return resource, encapsulating path, works both for filesystem and classpath
      */
-    <T> Config.Resource<T> toResource(Path path) {
-        return new Config.Resource.Filesystem<>(path);
+    public <T> Config.Resource<T> toResource(Path path) {
+        if (Files.exists(path)) {
+            return new Config.Resource.Filesystem<>(path);
+        }
+        return new Config.Resource.NotFound<>(path, this);
+    }
+
+    /**
+     * Create a resource for passed string path
+     * 
+     * @param path
+     *            path to the resource
+     * @return resource, encapsulating the path
+     * @param <T>
+     *            type of resource
+     */
+    public <T> Config.Resource<T> resource(String path) {
+        return toResource(resolve(path));
     }
 
     /**
@@ -156,14 +197,14 @@ public abstract class SettingsAnchor {
      *            another anchor
      * @return chained anchor
      */
-    public SettingsAnchor andThen(SettingsAnchor other) {
+    public PathAnchor andThen(PathAnchor other) {
         if (this.equals(other)) {
             return this;
         }
         return new Chain(this, other);
     }
 
-    static class Filesystem extends SettingsAnchor {
+    static class Filesystem extends PathAnchor {
         private final Path base;
 
         public Filesystem(Path base) {
@@ -171,7 +212,7 @@ public abstract class SettingsAnchor {
         }
 
         @Override
-        Path resolve(String part) {
+        public Path resolve(String part) {
             Path resolved = base.resolve(part);
             logger.fine(() -> String.format("%s resolved %s to %s", this, part, resolved));
             return resolved;
@@ -197,7 +238,7 @@ public abstract class SettingsAnchor {
         }
     }
 
-    static class Classpath extends SettingsAnchor {
+    static class Classpath extends PathAnchor {
         private final Path prefix;
         private final ClassLoader loader;
 
@@ -207,7 +248,7 @@ public abstract class SettingsAnchor {
         }
 
         @Override
-        Path resolve(String part) {
+        public Path resolve(String part) {
             Path resolved = prefix.resolve(part);
             logger.fine(() -> String.format("%s resolved %s to %s", this, part, resolved));
             return resolved;
@@ -223,16 +264,16 @@ public abstract class SettingsAnchor {
         }
 
         @Override
-        boolean exists(Path path) {
+        public boolean exists(Path path) {
             String name = resourceName(path);
             return loader.getResource(name) != null;
         }
 
         @Override
-        <T> Config.Resource<T> toResource(Path path) {
+        public <T> Config.Resource<T> toResource(Path path) {
             URL resource = loader.getResource(resourceName(path));
             if (resource == null) {
-                return null;
+                return new Config.Resource.NotFound<>(path, this);
             }
             return new Config.Resource.Classpath<>(resource);
         }
@@ -257,11 +298,11 @@ public abstract class SettingsAnchor {
         }
     }
 
-    static class Chain extends SettingsAnchor {
-        private final List<SettingsAnchor> children = new ArrayList<>();
+    static class Chain extends PathAnchor {
+        private final List<PathAnchor> children = new ArrayList<>();
 
-        Chain(SettingsAnchor... items) {
-            for (SettingsAnchor item : items) {
+        Chain(PathAnchor... items) {
+            for (PathAnchor item : items) {
                 if (item instanceof Chain) {
                     Chain c = (Chain) item;
                     c.children.forEach(this::add);
@@ -271,16 +312,16 @@ public abstract class SettingsAnchor {
             }
         }
 
-        private void add(SettingsAnchor item) {
+        private void add(PathAnchor item) {
             if (!children.contains(item)) {
                 children.add(item);
             }
         }
 
         @Override
-        Path resolve(String part) {
+        public Path resolve(String part) {
             Path path = null;
-            for (SettingsAnchor p : children) {
+            for (PathAnchor p : children) {
                 path = p.resolve(part);
                 if (p.exists(path)) {
                     return path;
@@ -291,14 +332,19 @@ public abstract class SettingsAnchor {
         }
 
         @Override
-        boolean exists(Path path) {
+        public boolean exists(Path path) {
             return children.stream().anyMatch(p -> p.exists(path));
         }
 
         @Override
-        <T> Config.Resource<T> toResource(Path path) {
-            Optional<SettingsAnchor> first = children.stream().filter(p -> p.exists(path)).findFirst();
-            return first.<Config.Resource<T>>map(resolver -> resolver.toResource(path)).orElse(null);
+        public <T> Config.Resource<T> toResource(Path path) {
+            for (PathAnchor child : children) {
+                if (child.exists(path)) {
+                    return child.toResource(path);
+                }
+            }
+
+            return new Config.Resource.NotFound<>(path, this);
         }
 
         @Override
@@ -318,9 +364,18 @@ public abstract class SettingsAnchor {
         int count() {
             return children.size();
         }
+
+        @Override
+        public String toString() {
+            StringJoiner joiner = new StringJoiner(", ", "[", "]");
+            for (PathAnchor anchor : children) {
+                joiner.add(anchor.toString());
+            }
+            return joiner.toString();
+        }
     }
 
-    private static class None extends SettingsAnchor {
+    private static class None extends PathAnchor {
         private None() {
         }
 

@@ -19,10 +19,7 @@ package com.worksap.nlp.sudachi
 import java.net.URL
 import java.nio.file.Path
 import java.nio.file.Paths
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFails
-import kotlin.test.assertNotNull
+import kotlin.test.*
 
 class ConfigTest {
 
@@ -33,7 +30,7 @@ class ConfigTest {
 
   @Test
   fun fromString() {
-    assertNotNull(Config.fromJsonString("{}", SettingsAnchor.classpath()))
+    assertNotNull(Config.fromJsonString("{}", PathAnchor.classpath()))
   }
 
   @Test
@@ -52,22 +49,21 @@ class ConfigTest {
   @Test
   fun resolveFilesystemPath() {
     val cfg =
-        Config.fromJsonString(
-            """{"systemDict": "test"}""", SettingsAnchor.filesystem(Paths.get("/usr")))
-    assertEquals(cfg.systemDictionary.repr(), Paths.get("/usr/test"))
+        Config.fromJsonString("""{"systemDict": "main"}""", PathAnchor.filesystem(Paths.get("src")))
+    assertEquals(cfg.systemDictionary.repr(), Paths.get("src/main"))
   }
 
   @Test
   fun resolveClasspathDefault() {
-    val cfg = Config.fromClasspath()
+    val cfg = Config.defaultConfig()
     assert((cfg.characterDefinition.repr() as URL).path.endsWith("char.def"))
     assertEquals(cfg.inputTextPlugins.size, 3)
     assertEquals(cfg.oovProviderPlugins.size, 1)
   }
 
   @Test
-  fun mergeReplace() {
-    val base = Config.fromClasspath()
+  fun merge() {
+    val base = Config.defaultConfig()
     val top =
         Config.fromJsonString(
             """{
@@ -78,8 +74,8 @@ class ConfigTest {
               "cost": 12000
             }]
         }""",
-            SettingsAnchor.filesystem(Paths.get("")))
-    val merged = base.merge(top, Config.MergeMode.REPLACE)
+            PathAnchor.filesystem(Paths.get("")))
+    val merged = top.withFallback(base)
     assert((merged.systemDictionary.repr() as Path).endsWith("test1.dic"))
     assertEquals(merged.userDictionaries.size, 2)
     assert((merged.userDictionaries[0].repr() as Path).endsWith("test2.dic"))
@@ -88,37 +84,8 @@ class ConfigTest {
     assertEquals(
         merged.oovProviderPlugins[0].clazzName, "com.worksap.nlp.sudachi.SimpleOovProviderPlugin")
     assertEquals(merged.oovProviderPlugins[0].internal.getInt("cost"), 12000)
-  }
-
-  @Test
-  fun mergeAppend() {
-    val base = Config.fromClasspath()
-    val top =
-        Config.fromJsonString(
-            """{
-            "systemDict": "test1.dic",
-            "userDict": ["test2.dic", "test3.dic"],
-            "oovProviderPlugin": [{
-              "class": "com.worksap.nlp.sudachi.SimpleOovProviderPlugin",
-              "cost": 12000
-            }]
-        }""",
-            SettingsAnchor.filesystem(Paths.get("")))
-    val merged = base.merge(top, Config.MergeMode.REPLACE)
-    assert((merged.systemDictionary.repr() as Path).endsWith("test1.dic"))
-    assertEquals(merged.userDictionaries.size, 2)
-    assert((merged.userDictionaries[0].repr() as Path).endsWith("test2.dic"))
-    assert((merged.userDictionaries[1].repr() as Path).endsWith("test3.dic"))
-    assertEquals(merged.oovProviderPlugins.size, 1)
-    assertEquals(
-        merged.oovProviderPlugins[0].clazzName, "com.worksap.nlp.sudachi.SimpleOovProviderPlugin")
-    assertEquals(merged.oovProviderPlugins[0].internal.getInt("cost"), 12000)
-  }
-
-  @Test
-  fun fromClasspathMerged() {
-    val config = Config.fromClasspathMerged("sudachi.json", Config.MergeMode.APPEND)
-    assertEquals(config.oovProviderPlugins.size, 2)
+    assertEquals(merged.oovProviderPlugins[0].internal.getInt("leftId"), 8)
+    assertEquals(merged.oovProviderPlugins[0].internal.getInt("rightId"), 8)
   }
 
   @Test
@@ -130,7 +97,7 @@ class ConfigTest {
               "class": "java.lang.String"              
             }]
         }""",
-            SettingsAnchor.none())
+            PathAnchor.none())
     assertFails { cfg.oovProviderPlugins[0].instantiate() }
   }
 
@@ -143,7 +110,18 @@ class ConfigTest {
               "class": "java.lang.SSSSSString"              
             }]
         }""",
-            SettingsAnchor.none())
+            PathAnchor.none())
     assertFails { cfg.oovProviderPlugins[0].instantiate() }
+  }
+
+  @Test
+  fun equalsHashCode() {
+    val c1 = Config.fromClasspath("sudachi.json")
+    val c2 = Config.fromClasspath("sudachi.json")
+    val c3 = TestDictionary.user2Cfg()
+    assertEquals(c1.hashCode(), c2.hashCode())
+    assertEquals(c1, c2)
+    assertNotEquals(c1.hashCode(), c3.hashCode())
+    assertNotEquals(c1, c3)
   }
 }
